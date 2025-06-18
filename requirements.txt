@@ -1,0 +1,10 @@
+pandas
+finta
+xgboost
+scikit-learn
+matplotlib
+streamlit
+yfinance
+pytest
+notebook
+requests

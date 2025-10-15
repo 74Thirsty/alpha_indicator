@@ -1,28 +1,74 @@
-from utils.data_loader import OHLCVLoader
-from engine.feature_engine import FeatureEngine
-from engine.strategy_runner import StrategyRunner
-from engine.models import AlphaModel
+"""Example workflow that stitches together the Alpha Indicator components."""
 
-if __name__ == "__main__":
-    # Load and prepare data
-    loader = OHLCVLoader("data/eth_usdc_ohlcv.csv")
+from __future__ import annotations
+
+import argparse
+
+import numpy as np
+
+from engine.feature_engine import FeatureEngine
+from engine.models import AlphaModel
+from engine.strategy_runner import StrategyRunner
+from utils.data_loader import OHLCVLoader
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the Alpha Indicator demo pipeline")
+    parser.add_argument("source", help="CSV path or yfinance ticker symbol")
+    parser.add_argument("--train-test-split", type=float, default=0.2, dest="test_size")
+    parser.add_argument("--take-profit", type=float, default=0.1)
+    parser.add_argument("--stop-loss", type=float, default=0.05)
+    return parser.parse_args()
+
+
+def build_targets(close_prices: np.ndarray, threshold: float = 0.0) -> np.ndarray:
+    future_returns = np.roll(close_prices, -1) / close_prices - 1
+    future_returns[-1] = 0  # last value has no look-ahead
+    return (future_returns > threshold).astype(int)
+
+
+def main() -> None:
+    args = parse_args()
+
+    loader = OHLCVLoader(args.source)
     df = loader.load()
 
-    # Add indicators
-    fe = FeatureEngine(df)
-    enriched_df = fe.add_indicators()
+    engine = FeatureEngine(df)
+    enriched_df = engine.add_indicators()
 
-    # Train model
+    targets = build_targets(enriched_df["close"].to_numpy(), threshold=0.01)
+    enriched_df = enriched_df.iloc[:-1].copy()
+    targets = targets[:-1]
+
+    feature_columns = [
+        "EMA_10",
+        "EMA_50",
+        "SMA_20",
+        "RSI",
+        "MACD",
+        "MACD_SIGNAL",
+        "OBV",
+        "BB_UPPER",
+        "BB_LOWER",
+        "ATR_14",
+        "STOCH_K",
+        "STOCH_D",
+    ]
+    X = enriched_df[feature_columns]
+
     model = AlphaModel()
-    enriched_df["target"] = enriched_df["close"].pct_change().shift(-1).apply(lambda x: 1 if x > 0.01 else 0)
-    enriched_df = enriched_df.dropna()
-    X = enriched_df[["EMA_10", "EMA_50", "RSI", "MACD", "OBV"]]
-    y = enriched_df["target"]
-    model.train(X, y)
-    predictions = model.predict(X)
-    print("Sample Predictions:", predictions[:5])
+    metrics = model.train(X, targets, test_size=args.test_size)
+    print("Model metrics:", metrics)
 
-    # Run a sample backtest using basic rules
     runner = StrategyRunner(enriched_df)
-    stats = runner.run_backtest(entry_rule="RSI < 30", exit_rule="RSI > 70", sl=0.05, tp=0.10)
-    print(stats)
+    backtest = runner.run_backtest(
+        entry_rule="RSI < 35",
+        exit_rule="RSI > 65",
+        sl=args.stop_loss,
+        tp=args.take_profit,
+    )
+    print("Backtest summary:", backtest)
+
+
+if __name__ == "__main__":
+    main()

@@ -3,6 +3,12 @@
 A Modular, AI-assisted trading research engine.
 [![Copilot-20250601-124946.png](https://i.postimg.cc/P5TQq2RL/Copilot-20250601-124946.png)](https://postimg.cc/QHYT4kss)
 
+## 🆕 Recent Enhancements
+
+* Expanded the feature engine with Bollinger Bands, ATR, Stochastic oscillators, and runtime extensibility.
+* Hardened the backtesting runner with trade ledgers, drawdown statistics, and flexible rule definitions.
+* Polished the example pipeline, arbitrage scoring, data ingestion, and Telegram notifications for production readiness.
+
 ## 🔧 Technologies & Tools
 
 [![Cyfrin](https://img.shields.io/badge/Cyfrin-Audit%20Ready-brightgreen?logo=shield)](https://www.cyfrin.io/)

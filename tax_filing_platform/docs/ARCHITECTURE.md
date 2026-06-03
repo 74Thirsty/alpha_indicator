@@ -34,7 +34,7 @@ Module gets narrowly limited authority to move exact approved amounts.
 
 The module must be enabled on a Safe before it is useful. After the Safe enables it, the Safe calls `enable_module_for_safe()` to register that Safe with the module. Each Safe then creates its own orders through `create_filing_order_for_safe(tax_year, data_hash, max_deposit)`, so the order owner is the Safe address rather than an EOA.
 
-Settlement is submitted by the backend/operator through `settle_safe_order(safe, order_id, tax_due, platform_fee, calculation_hash, v, r, s)`. The signed settlement binds the chain, module, Safe, order ID, exact payout amounts, current tax destination, current platform fee recipient, and calculation hash. The module rejects reused settlements and can only call `execTransactionFromModule` with empty calldata, `CALL` operation, exact signed values, and allowlisted payment targets.
+Settlement is submitted by the backend/operator through `settle_safe_order(safe, order_id, tax_due, platform_fee, calculation_hash, settlement_deadline, nonce, v, r, s)`. The signed settlement binds the chain, module, Safe, order ID, exact payout amounts, current tax destination, current platform fee recipient, calculation hash, settlement deadline, and unordered nonce. Replay protection is enforced by `nonce_bitmap`, a per-Safe bitmap keyed by nonce word, so independent settlements can use non-sequential nonces without blocking parallel workflows. The module rejects reused nonces before executing payments and can only call `execTransactionFromModule` with empty calldata, `CALL` operation, exact signed values, and allowlisted payment targets.
 
 ## Critical module risk warning
 

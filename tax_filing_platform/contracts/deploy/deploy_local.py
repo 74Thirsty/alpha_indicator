@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 
-CONTRACT_NAME = "TaxFilingEscrow.vy"
+CONTRACT_RELATIVE_PATH = Path("safe/modules/TaxFilingSafeModule.vy")
 
 
 def resolve_contract_path() -> Path:
@@ -16,7 +16,7 @@ def resolve_contract_path() -> Path:
     Resolve the absolute path to the Vyper contract.
     Ensures the file exists and provides actionable errors.
     """
-    contract_path = Path(__file__).resolve().parents[1] / CONTRACT_NAME
+    contract_path = Path(__file__).resolve().parents[1] / CONTRACT_RELATIVE_PATH
 
     if not contract_path.exists():
         raise FileNotFoundError(
@@ -102,7 +102,13 @@ Example Python REPL deployment:
         source = f.read()
 
     contract = boa.load_partial(source)
-    deployed = contract.deploy(<constructor args>)
+    deployed = contract.deploy(
+        <operator>,
+        <signer>,
+        <platform_fee_recipient>,
+        <tax_payment_destination>,
+        <default_deadline_seconds>,
+    )
 
 Ensure your private key is injected via environment variables.
 """
@@ -140,7 +146,7 @@ Ensure PRIVATE_KEY is set in your environment.
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Robust deployment helper for TaxFilingEscrow.vy"
+        description="Robust deployment helper for TaxFilingSafeModule.vy"
     )
     parser.add_argument(
         "--toolchain",

@@ -1,6 +1,6 @@
 # Tax Filing Payment + Workflow Platform
 
-Production-oriented monorepo for a tax filing service workflow. The Vyper contract registers paid orders and tracks status; the FastAPI backend handles users, encrypted document uploads, audit logs, blockchain events, and provider workflow orchestration.
+Production-oriented monorepo for a tax filing service workflow. The Vyper contract is a tightly permissioned Safe Module: the User Safe / Business Safe remains the asset-holding account, while the module records filing authorizations and executes only exact signed settlements to allowlisted targets. The FastAPI backend handles users, encrypted document uploads, audit logs, blockchain events, and provider workflow orchestration.
 
 ## Compliance boundary
 
@@ -27,10 +27,11 @@ docker compose up --build
 1. Register and authenticate a user.
 2. Link a wallet address.
 3. Create a backend filing record with a non-sensitive data hash.
-4. Pay through `TaxFilingEscrow.create_filing_order(tax_year, data_hash)`.
-5. Upload encrypted documents through the backend.
-6. Operators update workflow status and initiate refunds through role-protected APIs.
-7. Mock provider tests simulate filed, accepted, and rejected returns.
+4. Enable `TaxFilingSafeModule` on the User Safe / Business Safe and register it with `enable_module_for_safe()`.
+5. Create a Safe-owned filing authorization with `create_filing_order_for_safe(tax_year, data_hash, max_deposit)`.
+6. Upload encrypted documents through the backend.
+7. Backend/operator submits signed settlement through `settle_safe_order(...)`; the module can only pay exact signed amounts to allowlisted destinations via the Safe.
+8. Mock provider tests simulate filed, accepted, and rejected returns.
 
 ## Production-readiness checklist
 
@@ -42,4 +43,4 @@ docker compose up --build
 - [x] E-file provider interface with mock implementation.
 - [x] Production provider is explicitly blocked until approved credentials and adapter mapping exist.
 - [x] PostgreSQL/Redis/local chain Docker topology.
-- [x] Pytest coverage for encryption, permissions, status transitions, upload validation, webhooks, reconciliation, and contract source requirements.
+- [x] Pytest coverage for encryption, permissions, status transitions, upload validation, webhooks, reconciliation, and Safe module source requirements.

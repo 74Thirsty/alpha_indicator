@@ -2,14 +2,16 @@ from pathlib import Path
 
 CONTRACTS = Path(__file__).resolve().parents[1]
 MODULE = CONTRACTS / "safe" / "modules" / "TaxFilingSafeModule.vy"
+PROXY = CONTRACTS / "safe" / "modules" / "TaxFilingSafeModuleProxy.sol"
 SAFE_INTERFACE = CONTRACTS / "safe" / "interfaces" / "ISafe.vy"
 GUARD = CONTRACTS / "safe" / "guards" / "TaxFilingGuard.vy"
 TYPES = CONTRACTS / "safe" / "libraries" / "TaxFilingTypes.vy"
 SOURCE = MODULE.read_text()
+PROXY_SOURCE = PROXY.read_text()
 
 
 def test_safe_module_layout_exists() -> None:
-    for contract in [MODULE, SAFE_INTERFACE, GUARD, TYPES]:
+    for contract in [MODULE, PROXY, SAFE_INTERFACE, GUARD, TYPES]:
         assert contract.exists()
 
 
@@ -86,6 +88,62 @@ def test_safe_contracts_compile_when_vyper_is_installed() -> None:
         vyper.compile_code(source_path.read_text(), output_formats=["abi", "bytecode"])
 
 
+
+
+def test_module_is_initializable_and_versioned_for_proxy_use() -> None:
+    assert "def __init__(" not in SOURCE
+    assert "def initialize(" in SOURCE
+    assert "_governance_admin: address" in SOURCE
+    assert 'assert not self.initialized, "already initialized"' in SOURCE
+    assert "self.owner = _governance_admin" in SOURCE
+    assert "initialized: public(bool)" in SOURCE
+    assert "def version() -> String[32]:" in SOURCE
+    assert "TaxFilingSafeModule/1.0.0" in SOURCE
+
+
+def test_proxy_delegates_enabled_module_calls_and_restricts_upgrades() -> None:
+    assert "contract TaxFilingSafeModuleProxy" in PROXY_SOURCE
+    assert "constructor(address governanceAdmin, address initialImplementation, bytes memory initCalldata)" in PROXY_SOURCE
+    assert 'require(initCalldata.length > 0, "initializer required")' in PROXY_SOURCE
+    assert "initialImplementation.delegatecall(initCalldata)" in PROXY_SOURCE
+    assert 'require(_moduleOwner() == governanceAdmin, "admin mismatch")' in PROXY_SOURCE
+    assert "function implementation() public view returns (address activeImplementation)" in PROXY_SOURCE
+    assert "function upgradeTo(address newImplementation) external onlyGovernanceAdmin" in PROXY_SOURCE
+    assert 'require(msg.sender == admin(), "governance only")' in PROXY_SOURCE
+    assert "delegatecall(gas(), target" in PROXY_SOURCE
+    assert "return(0, returndatasize())" in PROXY_SOURCE
+    assert "approved_executor" not in PROXY_SOURCE
+    assert "settlement signer" in PROXY_SOURCE
+
+
+def test_proxy_uses_eip1967_slots_to_avoid_module_storage_collisions() -> None:
+    assert "IMPLEMENTATION_SLOT" in PROXY_SOURCE
+    assert "ADMIN_SLOT" in PROXY_SOURCE
+    assert 'keccak256("eip1967.proxy.implementation")' in PROXY_SOURCE
+    assert 'keccak256("eip1967.proxy.admin")' in PROXY_SOURCE
+    assert "function _setImplementation(address newImplementation) private" in PROXY_SOURCE
+    assert "function _setAdmin(address newAdmin) private" in PROXY_SOURCE
+    assert "sstore(slot, newImplementation)" in PROXY_SOURCE
+    assert "sstore(slot, newAdmin)" in PROXY_SOURCE
+    assert "owner: public(address)" not in PROXY_SOURCE
+    assert "orders: public" not in PROXY_SOURCE
+
+
+def test_settlement_payload_binds_versioned_offchain_tax_engine_context() -> None:
+    assert "calculation_engine_version: bytes32" in SOURCE
+    assert "tax_rule_version: bytes32" in SOURCE
+    hash_body = SOURCE[SOURCE.index("def _settlement_hash("):SOURCE.index("def _use_nonce(")]
+    assert "calculation_engine_version" in hash_body
+    assert "tax_rule_version" in hash_body
+    assert "convert(chain.id, bytes32)" in hash_body
+    assert "convert(self, bytes32)" in hash_body
+    settle_body = SOURCE[SOURCE.index("def settle_safe_order("):SOURCE.index("def claim_timeout_refund(")]
+    assert 'assert calculation_engine_version != empty(bytes32), "engine version required"' in settle_body
+    assert 'assert tax_rule_version != empty(bytes32), "tax rule version required"' in settle_body
+    assert "self.orders[safe][order_id].calculation_engine_version = calculation_engine_version" in settle_body
+    assert "self.orders[safe][order_id].tax_rule_version = tax_rule_version" in settle_body
+
+
 def test_module_uses_per_safe_unordered_nonce_bitmap() -> None:
     assert "nonce_bitmap: public(HashMap[address, HashMap[uint256, uint256]])" in SOURCE
     assert "def _use_nonce(safe: address, nonce: uint256):" in SOURCE
@@ -146,6 +204,8 @@ def test_signed_settlement_fields_cannot_be_changed_by_executor() -> None:
         "convert(self.tax_payment_destination, bytes32)",
         "convert(self.platform_fee_recipient, bytes32)",
         "calculation_hash",
+        "calculation_engine_version",
+        "tax_rule_version",
         "convert(settlement_deadline, bytes32)",
         "convert(nonce, bytes32)",
     ]:
@@ -176,6 +236,8 @@ def test_executor_and_signer_settlement_gate_semantics() -> None:
         tax_destination: str = "irs",
         platform_fee_recipient: str = "platform",
         calculation_hash: str = "calc-hash",
+        calculation_engine_version: str = "engine-v1",
+        tax_rule_version: str = "tax-rules-2025.1",
         settlement_deadline: int = 200,
         nonce: int = 5,
         signed_by: str = signer,
@@ -189,6 +251,8 @@ def test_executor_and_signer_settlement_gate_semantics() -> None:
                 tax_destination,
                 platform_fee_recipient,
                 calculation_hash,
+                calculation_engine_version,
+                tax_rule_version,
                 settlement_deadline,
                 nonce,
             ),
@@ -206,6 +270,8 @@ def test_executor_and_signer_settlement_gate_semantics() -> None:
         tax_destination: str = "irs",
         platform_fee_recipient: str = "platform",
         calculation_hash: str = "calc-hash",
+        calculation_engine_version: str = "engine-v1",
+        tax_rule_version: str = "tax-rules-2025.1",
         settlement_deadline: int = 200,
         nonce: int = 5,
         max_deposit: int = 1_000,
@@ -220,6 +286,8 @@ def test_executor_and_signer_settlement_gate_semantics() -> None:
             tax_destination,
             platform_fee_recipient,
             calculation_hash,
+            calculation_engine_version,
+            tax_rule_version,
             settlement_deadline,
             nonce,
         )
@@ -258,6 +326,8 @@ def test_executor_and_signer_settlement_gate_semantics() -> None:
         {"tax_due": 701},
         {"platform_fee": 31},
         {"tax_destination": "attacker"},
+        {"calculation_engine_version": "engine-v2"},
+        {"tax_rule_version": "tax-rules-2026.1"},
     ]:
         try:
             settle(executor="executor-a", signature=valid_signature, **changed_field)

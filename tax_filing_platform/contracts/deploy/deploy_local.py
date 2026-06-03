@@ -8,23 +8,27 @@ from pathlib import Path
 from typing import Optional
 
 
-CONTRACT_RELATIVE_PATH = Path("safe/modules/TaxFilingSafeModule.vy")
+IMPLEMENTATION_RELATIVE_PATH = Path("safe/modules/TaxFilingSafeModule.vy")
+PROXY_RELATIVE_PATH = Path("safe/modules/TaxFilingSafeModuleProxy.sol")
 
 
-def resolve_contract_path() -> Path:
+def resolve_contract_paths() -> tuple[Path, Path]:
     """
-    Resolve the absolute path to the Vyper contract.
-    Ensures the file exists and provides actionable errors.
+    Resolve absolute paths to the Vyper implementation and proxy contracts.
+    Ensures both files exist and provides actionable errors.
     """
-    contract_path = Path(__file__).resolve().parents[1] / CONTRACT_RELATIVE_PATH
+    contracts_root = Path(__file__).resolve().parents[1]
+    implementation_path = contracts_root / IMPLEMENTATION_RELATIVE_PATH
+    proxy_path = contracts_root / PROXY_RELATIVE_PATH
 
-    if not contract_path.exists():
-        raise FileNotFoundError(
-            f"Contract file not found at expected location: {contract_path}\n"
-            "Verify your repository structure or adjust the path resolution."
-        )
+    for contract_path in [implementation_path, proxy_path]:
+        if not contract_path.exists():
+            raise FileNotFoundError(
+                f"Contract file not found at expected location: {contract_path}\n"
+                "Verify your repository structure or adjust the path resolution."
+            )
 
-    return contract_path
+    return implementation_path, proxy_path
 
 
 def ensure_env(var: str) -> str:
@@ -65,11 +69,12 @@ def detect_toolchain(preferred: Optional[str] = None) -> str:
     )
 
 
-def print_instructions(contract: Path, toolchain: str, verbose: bool = False) -> None:
+def print_instructions(implementation: Path, proxy: Path, toolchain: str, verbose: bool = False) -> None:
     """
     Print detailed deployment instructions tailored to the detected toolchain.
     """
-    logging.info(f"Contract resolved at: {contract}")
+    logging.info(f"Implementation resolved at: {implementation}")
+    logging.info(f"Proxy resolved at: {proxy}")
 
     if toolchain == "ape":
         logging.info("Detected toolchain: ape")
@@ -80,8 +85,15 @@ Ape Deployment Instructions
 1. Compile:
        ape compile
 
-2. Deploy:
-       ape deploy {contract.stem} --network ethereum:local
+2. Deploy the implementation, then the proxy:
+       ape deploy {implementation.stem} --network ethereum:local
+       ape deploy {proxy.stem} --network ethereum:local
+
+3. Deploy the proxy with constructor args (governance_admin, implementation,
+   init_calldata), where init_calldata encodes initialize(governance_admin,
+   operator, signer, platform_fee_recipient, tax_payment_destination,
+   default_deadline_seconds). Tax Safes should enable only the proxy address as
+   their module.
 
 Ensure your deployer key is provided via environment variables such as:
        APE_PRIVATE_KEY
@@ -98,17 +110,18 @@ Example Python REPL deployment:
 
     import boa
 
-    with open("{contract}", "r") as f:
-        source = f.read()
+    with open("{implementation}", "r") as f:
+        implementation_source = f.read()
+    implementation_contract = boa.load_partial(implementation_source)
+    implementation = implementation_contract.deploy()
 
-    contract = boa.load_partial(source)
-    deployed = contract.deploy(
-        <operator>,
-        <signer>,
-        <platform_fee_recipient>,
-        <tax_payment_destination>,
-        <default_deadline_seconds>,
-    )
+    # Compile and deploy the Solidity EIP-1967 proxy with solc/forge/web3,
+    # passing (governance_admin, implementation.address, init_calldata) to its
+    # constructor. init_calldata encodes the implementation initializer.
+
+Tax Safes should enable only the deployed proxy address as their module. Future
+production upgrades should be submitted by the governance Safe / multisig through
+proxy.upgradeTo(new_implementation).
 
 Ensure your private key is injected via environment variables.
 """
@@ -128,13 +141,19 @@ Example Python deployment script:
     w3 = Web3(Web3.HTTPProvider("<your RPC>"))
     acct = w3.eth.account.from_key(os.getenv("PRIVATE_KEY"))
 
-    with open("{contract}", "r") as f:
-        source = f.read()
+    with open("{implementation}", "r") as f:
+        implementation_source = f.read()
+    with open("{proxy}", "r") as f:
+        proxy_source = f.read()
 
     # Compile using vyper:
-    #   vyper -f combined_json {contract}
+    #   vyper -f combined_json {implementation}
+    #   solc --bin --abi {proxy}
 
-    # Then deploy using web3.py
+    # Then deploy implementation and proxy using web3.py, deploy the proxy with
+    # (governance_admin, implementation, init_calldata), and have Tax Safes enable
+    # only the proxy address. Governance Safe / multisig later calls
+    # proxy.upgradeTo(new_implementation).
 
 Ensure PRIVATE_KEY is set in your environment.
 """
@@ -146,7 +165,7 @@ Ensure PRIVATE_KEY is set in your environment.
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Robust deployment helper for TaxFilingSafeModule.vy"
+        description="Robust deployment helper for the upgradeable TaxFilingSafeModule proxy"
     )
     parser.add_argument(
         "--toolchain",
@@ -169,7 +188,7 @@ def main() -> None:
         format="[%(levelname)s] %(message)s",
     )
 
-    contract = resolve_contract_path()
+    implementation, proxy = resolve_contract_paths()
 
     # Validate required environment variables
     ensure_env("PRIVATE_KEY")
@@ -177,7 +196,7 @@ def main() -> None:
     toolchain = detect_toolchain(args.toolchain)
 
     if not args.dry_run:
-        print_instructions(contract, toolchain, verbose=args.verbose)
+        print_instructions(implementation, proxy, toolchain, verbose=args.verbose)
 
     logging.info("Deployment helper completed successfully.")
 

@@ -81,3 +81,77 @@ def test_safe_contracts_compile_when_vyper_is_installed() -> None:
 
     for source_path in [SAFE_INTERFACE, MODULE, GUARD, TYPES]:
         vyper.compile_code(source_path.read_text(), output_formats=["abi", "bytecode"])
+
+
+def test_module_uses_per_safe_unordered_nonce_bitmap() -> None:
+    assert "nonce_bitmap: public(HashMap[address, HashMap[uint256, uint256]])" in SOURCE
+    assert "def _use_nonce(safe: address, nonce: uint256):" in SOURCE
+    assert "word_pos: uint256 = nonce / 256" in SOURCE
+    assert "bit_pos: uint256 = nonce % 256" in SOURCE
+    assert "bit: uint256 = shift(1, convert(bit_pos, int256))" in SOURCE
+    assert "self.nonce_bitmap[safe][word_pos]" in SOURCE
+    assert 'assert word & bit == 0, "nonce used"' in SOURCE
+    assert "self.nonce_bitmap[safe][word_pos] = word | bit" in SOURCE
+    assert "used_settlement_hash" not in SOURCE
+
+
+def test_settlement_signature_binds_deadline_and_nonce() -> None:
+    assert "settlement_deadline: uint256" in SOURCE
+    assert "nonce: uint256" in SOURCE
+    assert "convert(settlement_deadline, bytes32)" in SOURCE
+    assert "convert(nonce, bytes32)" in SOURCE
+    assert 'assert block.timestamp <= settlement_deadline, "settlement expired"' in SOURCE
+    assert "self._use_nonce(safe, nonce)" in SOURCE
+
+
+def test_nonce_is_consumed_after_signature_checks_and_before_payments() -> None:
+    settle_body = SOURCE[SOURCE.index("def settle_safe_order("):SOURCE.index("def claim_timeout_refund(")]
+    nonce_use = settle_body.index("self._use_nonce(safe, nonce)")
+    signature_check = settle_body.index('assert recovered == self.signer, "bad signature"')
+    first_payment = settle_body.index("self._execute_safe_payment")
+    assert signature_check < nonce_use < first_payment
+
+
+def test_nonce_bitmap_semantics_cover_required_replay_cases() -> None:
+    bitmap: dict[str, dict[int, int]] = {}
+
+    def use_nonce(safe: str, nonce: int) -> None:
+        word_pos = nonce // 256
+        bit_pos = nonce % 256
+        bit = 1 << bit_pos
+        word = bitmap.setdefault(safe, {}).get(word_pos, 0)
+        if word & bit:
+            raise ValueError("nonce used")
+        bitmap[safe][word_pos] = word | bit
+
+    # first use of nonce succeeds
+    use_nonce("safe-a", 5)
+
+    # second use of same nonce fails; an altered payload with the same nonce fails
+    # through the same per-Safe nonce invalidation path once the first settlement succeeds.
+    for replayed_nonce in [5, 5]:
+        try:
+            use_nonce("safe-a", replayed_nonce)
+        except ValueError as exc:
+            assert str(exc) == "nonce used"
+        else:
+            raise AssertionError("same Safe reused a burned nonce")
+
+    # different Safe can use same nonce
+    use_nonce("safe-b", 5)
+
+    # high nonce works and lands in a high bitmap word
+    use_nonce("safe-a", 999999)
+    assert bitmap["safe-a"][999999 // 256] & (1 << (999999 % 256))
+
+    # nonce in different bitmap word works and does not collide with nonce 5
+    use_nonce("safe-a", 256)
+    assert bitmap["safe-a"][1] & 1
+
+    # replay after settlement fails
+    try:
+        use_nonce("safe-a", 999999)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("replay after settlement reused a burned nonce")

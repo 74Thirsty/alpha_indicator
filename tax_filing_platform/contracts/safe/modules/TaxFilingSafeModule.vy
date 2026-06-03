@@ -53,8 +53,7 @@ safe_enabled: public(HashMap[address, bool])
 next_order_id_by_safe: public(HashMap[address, uint256])
 orders: public(HashMap[address, HashMap[uint256, SafeFilingOrder]])
 allowed_execution_target: public(HashMap[address, bool])
-
-used_settlement_hash: public(HashMap[bytes32, bool])
+nonce_bitmap: public(HashMap[address, HashMap[uint256, uint256]])
 
 
 event SafeModuleRegistered:
@@ -188,7 +187,9 @@ def _settlement_hash(
     order_id: uint256,
     tax_due: uint256,
     platform_fee: uint256,
-    calculation_hash: bytes32
+    calculation_hash: bytes32,
+    settlement_deadline: uint256,
+    nonce: uint256
 ) -> bytes32:
     return keccak256(
         concat(
@@ -200,9 +201,23 @@ def _settlement_hash(
             convert(platform_fee, bytes32),
             convert(self.tax_payment_destination, bytes32),
             convert(self.platform_fee_recipient, bytes32),
-            calculation_hash
+            calculation_hash,
+            convert(settlement_deadline, bytes32),
+            convert(nonce, bytes32)
         )
     )
+
+
+@internal
+def _use_nonce(safe: address, nonce: uint256):
+    word_pos: uint256 = nonce / 256
+    bit_pos: uint256 = nonce % 256
+    bit: uint256 = shift(1, convert(bit_pos, int256))
+
+    word: uint256 = self.nonce_bitmap[safe][word_pos]
+    assert word & bit == 0, "nonce used"
+
+    self.nonce_bitmap[safe][word_pos] = word | bit
 
 
 @internal
@@ -281,6 +296,8 @@ def settle_safe_order(
     tax_due: uint256,
     platform_fee: uint256,
     calculation_hash: bytes32,
+    settlement_deadline: uint256,
+    nonce: uint256,
     v: uint8,
     r: bytes32,
     s: bytes32
@@ -288,7 +305,7 @@ def settle_safe_order(
     """
     Backend/operator submits a signed settlement. The signature binds this
     module, chain, Safe, order, exact payout amounts, current allowlisted payout
-    destinations, and calculation hash.
+    destinations, calculation hash, settlement deadline, and unordered nonce.
     """
     assert msg.sender == self.operator, "operator only"
     assert self.safe_enabled[safe], "safe not registered"
@@ -299,6 +316,7 @@ def settle_safe_order(
     assert order.status == AUTHORIZED, "not authorized"
     assert not order.settled, "already settled"
     assert block.timestamp <= order.deadline, "deadline passed"
+    assert block.timestamp <= settlement_deadline, "settlement expired"
     assert calculation_hash != empty(bytes32), "calculation hash required"
 
     total: uint256 = tax_due + platform_fee
@@ -306,12 +324,18 @@ def settle_safe_order(
     assert self.allowed_execution_target[self.tax_payment_destination], "tax target not allowed"
     assert self.allowed_execution_target[self.platform_fee_recipient], "fee target not allowed"
 
-    digest: bytes32 = self._settlement_hash(safe, order_id, tax_due, platform_fee, calculation_hash)
-    assert not self.used_settlement_hash[digest], "settlement used"
+    digest: bytes32 = self._settlement_hash(
+        safe,
+        order_id,
+        tax_due,
+        platform_fee,
+        calculation_hash,
+        settlement_deadline,
+        nonce
+    )
     recovered: address = ecrecover(digest, v, r, s)
     assert recovered == self.signer, "bad signature"
-
-    self.used_settlement_hash[digest] = True
+    self._use_nonce(safe, nonce)
     self.orders[safe][order_id].tax_due = tax_due
     self.orders[safe][order_id].platform_fee = platform_fee
     self.orders[safe][order_id].refund_amount = order.max_deposit - total

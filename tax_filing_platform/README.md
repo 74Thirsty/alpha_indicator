@@ -30,7 +30,7 @@ docker compose up --build
 4. Enable `TaxFilingSafeModule` on the User Safe / Business Safe and register it with `enable_module_for_safe()`.
 5. Create a Safe-owned filing authorization with `create_filing_order_for_safe(tax_year, data_hash, max_deposit)`.
 6. Upload encrypted documents through the backend.
-7. Backend/operator submits signed settlement through `settle_safe_order(...)`; the module can only pay exact signed amounts to allowlisted destinations via the Safe.
+7. Backend/operator submits a signed settlement through `settle_safe_order(...)`, including a settlement deadline and per-Safe unordered nonce; the module burns the nonce in `nonce_bitmap` and can only pay exact signed amounts to allowlisted destinations via the Safe.
 8. Mock provider tests simulate filed, accepted, and rejected returns.
 
 ## Production-readiness checklist

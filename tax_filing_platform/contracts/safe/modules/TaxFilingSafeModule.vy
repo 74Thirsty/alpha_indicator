@@ -40,6 +40,8 @@ struct SafeFilingOrder:
     platform_fee: uint256
     refund_amount: uint256
     calculation_hash: bytes32
+    calculation_engine_version: bytes32
+    tax_rule_version: bytes32
 
 owner: public(address)
 operator: public(address)
@@ -55,6 +57,9 @@ orders: public(HashMap[address, HashMap[uint256, SafeFilingOrder]])
 allowed_execution_target: public(HashMap[address, bool])
 approved_executor: public(HashMap[address, bool])
 nonce_bitmap: public(HashMap[address, HashMap[uint256, uint256]])
+# New storage variables must only be appended below this line. Never reorder or
+# delete existing storage slots; proxy deployments delegate into this layout.
+initialized: public(bool)
 
 
 event SafeModuleRegistered:
@@ -108,6 +113,8 @@ event SafeFilingOrderSettled:
     tax_destination: address
     platform_fee_recipient: address
     calculation_hash: bytes32
+    calculation_engine_version: bytes32
+    tax_rule_version: bytes32
     settlement_hash: bytes32
     timestamp: uint256
 
@@ -143,20 +150,24 @@ event Unpaused:
 
 
 @external
-def __init__(
+def initialize(
+    _governance_admin: address,
     _operator: address,
     _signer: address,
     _platform_fee_recipient: address,
     _tax_payment_destination: address,
     _default_deadline_seconds: uint256
 ):
+    assert not self.initialized, "already initialized"
+    assert _governance_admin != empty(address), "governance admin required"
     assert _operator != empty(address), "operator required"
     assert _signer != empty(address), "signer required"
     assert _platform_fee_recipient != empty(address), "fee recipient required"
     assert _tax_payment_destination != empty(address), "tax destination required"
     assert _default_deadline_seconds > 0, "deadline required"
 
-    self.owner = msg.sender
+    self.initialized = True
+    self.owner = _governance_admin
     self.operator = _operator
     self.signer = _signer
     self.platform_fee_recipient = _platform_fee_recipient
@@ -165,6 +176,12 @@ def __init__(
     self.allowed_execution_target[_platform_fee_recipient] = True
     self.allowed_execution_target[_tax_payment_destination] = True
     self.approved_executor[_operator] = True
+
+
+@external
+@view
+def version() -> String[32]:
+    return "TaxFilingSafeModule/1.0.0"
 
 
 @internal
@@ -195,9 +212,13 @@ def _settlement_hash(
     tax_due: uint256,
     platform_fee: uint256,
     calculation_hash: bytes32,
+    calculation_engine_version: bytes32,
+    tax_rule_version: bytes32,
     settlement_deadline: uint256,
     nonce: uint256
 ) -> bytes32:
+    # EIP-712-style settlement digest. It binds chain.id and address(self),
+    # which is the enabled proxy address when called through delegatecall.
     return keccak256(
         concat(
             convert(chain.id, bytes32),
@@ -209,6 +230,8 @@ def _settlement_hash(
             convert(self.tax_payment_destination, bytes32),
             convert(self.platform_fee_recipient, bytes32),
             calculation_hash,
+            calculation_engine_version,
+            tax_rule_version,
             convert(settlement_deadline, bytes32),
             convert(nonce, bytes32)
         )
@@ -288,7 +311,9 @@ def create_filing_order_for_safe(tax_year: uint256, data_hash: bytes32, max_depo
         tax_due: 0,
         platform_fee: 0,
         refund_amount: 0,
-        calculation_hash: empty(bytes32)
+        calculation_hash: empty(bytes32),
+        calculation_engine_version: empty(bytes32),
+        tax_rule_version: empty(bytes32)
     })
 
     log SafeFilingOrderCreated(msg.sender, order_id, tax_year, data_hash, max_deposit, deadline, block.timestamp)
@@ -303,6 +328,8 @@ def settle_safe_order(
     tax_due: uint256,
     platform_fee: uint256,
     calculation_hash: bytes32,
+    calculation_engine_version: bytes32,
+    tax_rule_version: bytes32,
     settlement_deadline: uint256,
     nonce: uint256,
     v: uint8,
@@ -312,7 +339,8 @@ def settle_safe_order(
     """
     Approved executor submits a signed settlement. The signature binds this
     module, chain, Safe, order, exact payout amounts, current allowlisted payout
-    destinations, calculation hash, settlement deadline, and unordered nonce.
+    destinations, calculation hash, calculation engine version, tax rule
+    version, settlement deadline, and unordered nonce.
     """
     assert self.approved_executor[msg.sender], "executor not allowed"
     assert self.safe_enabled[safe], "safe not registered"
@@ -325,6 +353,8 @@ def settle_safe_order(
     assert block.timestamp <= order.deadline, "deadline passed"
     assert block.timestamp <= settlement_deadline, "settlement expired"
     assert calculation_hash != empty(bytes32), "calculation hash required"
+    assert calculation_engine_version != empty(bytes32), "engine version required"
+    assert tax_rule_version != empty(bytes32), "tax rule version required"
 
     total: uint256 = tax_due + platform_fee
     assert total <= order.max_deposit, "over max_deposit"
@@ -337,6 +367,8 @@ def settle_safe_order(
         tax_due,
         platform_fee,
         calculation_hash,
+        calculation_engine_version,
+        tax_rule_version,
         settlement_deadline,
         nonce
     )
@@ -347,6 +379,8 @@ def settle_safe_order(
     self.orders[safe][order_id].platform_fee = platform_fee
     self.orders[safe][order_id].refund_amount = order.max_deposit - total
     self.orders[safe][order_id].calculation_hash = calculation_hash
+    self.orders[safe][order_id].calculation_engine_version = calculation_engine_version
+    self.orders[safe][order_id].tax_rule_version = tax_rule_version
     self.orders[safe][order_id].settled = True
     self.orders[safe][order_id].status = SETTLED
 
@@ -362,6 +396,8 @@ def settle_safe_order(
         self.tax_payment_destination,
         self.platform_fee_recipient,
         calculation_hash,
+        calculation_engine_version,
+        tax_rule_version,
         digest,
         block.timestamp
     )

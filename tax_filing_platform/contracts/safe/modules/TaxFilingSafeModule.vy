@@ -53,6 +53,7 @@ safe_enabled: public(HashMap[address, bool])
 next_order_id_by_safe: public(HashMap[address, uint256])
 orders: public(HashMap[address, HashMap[uint256, SafeFilingOrder]])
 allowed_execution_target: public(HashMap[address, bool])
+approved_executor: public(HashMap[address, bool])
 nonce_bitmap: public(HashMap[address, HashMap[uint256, uint256]])
 
 
@@ -70,6 +71,11 @@ event SafeModuleDisabled:
 
 event ExecutionTargetAllowlistUpdated:
     target: indexed(address)
+    allowed: bool
+
+
+event ExecutorUpdated:
+    executor: indexed(address)
     allowed: bool
 
 
@@ -158,6 +164,7 @@ def __init__(
     self.default_deadline_seconds = _default_deadline_seconds
     self.allowed_execution_target[_platform_fee_recipient] = True
     self.allowed_execution_target[_tax_payment_destination] = True
+    self.approved_executor[_operator] = True
 
 
 @internal
@@ -303,11 +310,11 @@ def settle_safe_order(
     s: bytes32
 ):
     """
-    Backend/operator submits a signed settlement. The signature binds this
+    Approved executor submits a signed settlement. The signature binds this
     module, chain, Safe, order, exact payout amounts, current allowlisted payout
     destinations, calculation hash, settlement deadline, and unordered nonce.
     """
-    assert msg.sender == self.operator, "operator only"
+    assert self.approved_executor[msg.sender], "executor not allowed"
     assert self.safe_enabled[safe], "safe not registered"
     assert self._order_exists(safe, order_id), "order missing"
     assert not self.paused, "paused"
@@ -386,6 +393,14 @@ def set_execution_target_allowed(target: address, allowed: bool):
     assert target != empty(address), "target required"
     self.allowed_execution_target[target] = allowed
     log ExecutionTargetAllowlistUpdated(target, allowed)
+
+
+@external
+def set_executor_allowed(executor: address, allowed: bool):
+    self._only_owner()
+    assert executor != empty(address), "executor required"
+    self.approved_executor[executor] = allowed
+    log ExecutorUpdated(executor, allowed)
 
 
 @external
